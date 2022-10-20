@@ -1,0 +1,115 @@
+---
+
+- include_tasks: set_facts.yml
+
+- set_fact:
+	 version: "{{ ansible_distribution_version }}"
+####Check OS requirements and id mdatp is already installed
+- name: Check if Redhat 7.2 of above if not exit
+  assert:
+	that:
+	  - "{{ version }} > 7.2"
+	fail_msg: "{{ version }} is less than 7.2.  Cannot install below RHEL 7.2. Exiting"
+	success_msg: "Version Check OK."
+
+- name: Check if mdatp is installed
+  stat:
+	path: /opt/microsoft/mdatp/sbin//wdavdaemon
+  register: ms_check
+  
+- name: Exit playbook if mdatp is installed 
+  fail:
+    msg: "MS Defender ATP is already installed.  Nothing to do."
+  when: ms_check.stat.exists == true
+  
+####Check connectivity to repo
+
+- name: Check connectivity to repo 
+  shell: "/usr/sbin/subscription-manager repos | grep -c Defender"
+  register: repo_check
+
+- name: Exit playbook if repo not available
+  fail:
+    msg: "MS Defender Repo unavailable. Nothing to do"
+  when: repo_check == 0
+
+###Create Mdatp Directories
+
+- name: Create MDATP directories
+  file:
+    path: /etc/opt/microsoft/mdatp/
+    recurse: true
+    state: directory
+    mode: 0755
+    owner: root
+    group: root
+
+- name: Register mdatp_onboard.json
+  stat:
+    path: /etc/opt/microsoft/mdatp/mdatp_onboard.json
+  register: mdatp_onboard
+
+- name: Extract WindowsDefenderATPOnboardingPackage.zip into /etc/opt/microsoft/mdatp
+  unarchive:
+    src: WindowsDefenderATPOnboardingPackage.zip
+    dest: /etc/opt/microsoft/mdatp
+    mode: 0600
+    owner: root
+    group: root
+  when: not mdatp_onboard.stat.exists
+	
+####Install mdatp from repo and execute onboarding script
+
+- name: Copy the onboarding script to the root directory 
+  copy:
+    src:  files/MicrosoftDefenderATPOnboardingLinuxServer.py
+	dest: /root
+	owner: root
+	group: root
+	mode: 0644
+
+- name: Enable the MDATP repo
+  command: /usr/sbin/subscription-manager repos --enable=NTRS_MS_Defender_repo_MS_Defender_repo
+  
+- name: install the MDATP app from the repo
+  yum:
+    name: mdatp
+	state: latest
+	update_cache: yes
+
+- name: Execute the onboarding script
+  command: /usr/bin/python /root/MicrosoftDefenderATPOnboardingLinuxServer.py
+
+- name: Copy the systemd service file for the MDATP service
+  copy:
+    src: files/mdatp.service
+	dest: /lib/systemd/system/mdatp.service
+	owner: root
+	group: root
+	mode: 0644
+  when: ansible_distribution_major_version == "7"
+  
+### Setup managed exclusions before mdatp service restart so it takes effect###
+
+- name: Copy the managed exclusions file to tis expected location
+  copy:
+    src: roles/install_upgrade_with_exclusions/files/mdatp_managed.json
+	dest: /etc/opt/microsoft/mdatp/managed
+	owner: root
+	group: root
+	mode: 0644
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: reload mdatp service
+  systemd:
+    name: mdatp
+	state: restarted
+
+- name: remove the onboarding script from the root directory
+  file:
+    path: /root/MicrosoftDefenderATPOnboardingLinuxServer.py
+	state: absent
+	
